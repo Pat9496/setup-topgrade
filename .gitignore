@@ -1,0 +1,13 @@
+# AI assistant instruction files
+CLAUDE.md
+AGENTS.md
+
+# Local Claude Code session settings (machine/session-specific state)
+.claude/
+
+# Archives
+*.zip
+*.tar.gz
+*.tar.bz2
+*.rar
+*.7z
