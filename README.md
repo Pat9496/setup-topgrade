@@ -50,8 +50,10 @@ The generated config includes a few pieces conditionally, based on what's actual
 |---|---|
 | `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` exists (ublue-os/Bazzite theme-update commands) |
 | `[linux] rpm_ostree = true` | Running on an rpm-ostree/atomic host |
-| `"chezmoi"` in `disable`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
+| `[misc] no_self_update = true` | Running on an rpm-ostree/atomic host (topgrade is package-managed there, not self-updating) |
+| `"chezmoi"` in `disable`, `[misc] last = ["Chezmoi Push"]`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
 | `"ScummVM Nightly"` custom command | `scummvm-nightly-update` is on `$PATH` |
+| `[containers] runtime = "podman"` | `podman` is on `$PATH` and `docker` is not |
 
 ### chezmoi integration
 

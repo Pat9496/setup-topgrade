@@ -127,17 +127,43 @@ configure_topgrade() {
             log "scummvm: scummvm-nightly-update not found, skipping"
         fi
 
+        local podman_runtime_line=""
+        if command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
+            log "podman runtime: podman found and docker absent, setting runtime = podman"
+            podman_runtime_line='runtime = "podman"'
+        else
+            log "podman runtime: skipping (docker present, or podman not found)"
+        fi
+
+        local no_self_update_line=""
+        if is_atomic_host; then
+            log "no_self_update: atomic host detected, enabling no_self_update = true"
+            no_self_update_line="no_self_update = true"
+        else
+            log "no_self_update: not an atomic host, skipping"
+        fi
+
+        local chezmoi_last_line=""
+        if chezmoi_available; then
+            log "chezmoi last: available, ensuring Chezmoi Push runs last"
+            chezmoi_last_line='last = ["Chezmoi Push"]'
+        else
+            log "chezmoi last: not available, skipping"
+        fi
+
         local lines=()
         lines+=("[include]")
         [[ -n "$include_paths_line" ]] && lines+=("$include_paths_line")
         lines+=("")
         lines+=("[misc]")
         lines+=("$disable_line")
+        [[ -n "$chezmoi_last_line" ]] && lines+=("$chezmoi_last_line")
         lines+=("pre_sudo = false")
         lines+=("assume_yes = true")
         lines+=("ask_retry = false")
         lines+=("cleanup = true")
         lines+=('notify_end = "on_failure"')
+        [[ -n "$no_self_update_line" ]] && lines+=("$no_self_update_line")
         lines+=('ignore_failures = ["powershell","toolbx","distrobox"]')
         lines+=("show_skipped = false")
         lines+=("")
@@ -207,6 +233,7 @@ configure_topgrade() {
         lines+=("[distrobox]")
         lines+=("")
         lines+=("[containers]")
+        [[ -n "$podman_runtime_line" ]] && lines+=("$podman_runtime_line")
         lines+=("system_prune = false")
         lines+=("use_sudo = false")
         lines+=("")
