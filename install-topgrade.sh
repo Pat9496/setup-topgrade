@@ -103,6 +103,7 @@ configure_topgrade() {
         local include_paths_line=""
         if [[ -f /etc/ublue-os/topgrade.toml ]]; then
             log "ublue-os include: detected /etc/ublue-os/topgrade.toml, including it"
+            log "Note: nested topgrade runs inside plain toolbx/distrobox containers may log a harmless 'Unable to read /etc/ublue-os/topgrade.toml' error for this include"
             include_paths_line='paths = ["/etc/ublue-os/topgrade.toml"]'
         else
             log "ublue-os include: not detected, skipping"
@@ -117,10 +118,13 @@ configure_topgrade() {
         fi
 
         local disable_items=()
-        if command -v waydroid >/dev/null 2>&1; then
-            log "waydroid: installed, including it in updates (not disabling)"
-        else
+        if ! command -v waydroid >/dev/null 2>&1; then
             log "waydroid: not installed, disabling it in generated config"
+            disable_items+=("waydroid")
+        elif waydroid status 2>/dev/null | grep -q "Session:"; then
+            log "waydroid: installed and initialized, including it in updates (not disabling)"
+        else
+            log "waydroid: installed but not initialized (run 'waydroid init' first), disabling it in generated config to avoid a topgrade crash (topgrade-rs/topgrade#869); re-run with --force-config once initialized to re-enable it"
             disable_items+=("waydroid")
         fi
 

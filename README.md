@@ -48,15 +48,17 @@ The generated config includes a few pieces conditionally, based on what's actual
 
 | Config piece | Included when |
 |---|---|
-| `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` exists (ublue-os/Bazzite theme-update commands) |
+| `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` exists (ublue-os/Bazzite theme-update commands) — since `~/.config/topgrade.toml` is shared into `toolbx`/`distrobox` containers, this may log a harmless `Unable to read /etc/ublue-os/topgrade.toml` error there; the script prints a heads-up about this when it adds the line |
 | `[linux] rpm_ostree = true` | Running on an rpm-ostree/atomic host |
 | `[misc] no_self_update = true` | Running on an rpm-ostree/atomic host (topgrade is package-managed there, not self-updating) |
 | `"chezmoi"` in `disable`, `[misc] last = ["custom_commands"]`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
 | `"ScummVM Nightly"` custom command | `scummvm-nightly-update` is on `$PATH` |
 | `[containers] runtime = "podman"` | `podman` is on `$PATH` and `docker` is not |
-| `"waydroid"` in `disable` | only added when waydroid is **not** installed — if it is installed, it's left enabled so topgrade manages it too |
+| `"waydroid"` in `disable` | added unless waydroid is both installed **and** initialized (`waydroid status` reports a `Session:` line) |
 
-> **Known issue:** if waydroid is installed but never initialized (`waydroid init` was never run), topgrade currently crashes outright when it probes `waydroid status` — this happens regardless of whether `waydroid` is in `disable`, and it's an upstream bug ([topgrade-rs/topgrade#869](https://github.com/topgrade-rs/topgrade/issues/869)), not something this script controls. Run `waydroid init` to fix it, or remove waydroid (`rpm-ostree override remove waydroid` on atomic hosts) if you don't use it.
+> **Why waydroid is disabled by default:** if waydroid is installed but never initialized (`waydroid init` was never run), `waydroid status` doesn't print a `Session:` line, and topgrade crashes outright when it parses that — an upstream bug ([topgrade-rs/topgrade#869](https://github.com/topgrade-rs/topgrade/issues/869)). To avoid that crash, the script disables the `waydroid` step unless it can confirm waydroid is actually initialized.
+>
+> To let topgrade manage waydroid, run `waydroid init`, then re-run `./install-topgrade.sh --force-config` to regenerate the config — the script will detect the initialized session and leave `waydroid` enabled. (You can also just delete `"waydroid"` from `disable = [...]` in `topgrade.toml` by hand.)
 
 ### chezmoi integration
 
