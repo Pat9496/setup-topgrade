@@ -51,13 +51,23 @@ The generated config includes a few pieces conditionally, based on what's actual
 | `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` exists (ublue-os/Bazzite theme-update commands) |
 | `[linux] rpm_ostree = true` | Running on an rpm-ostree/atomic host |
 | `[misc] no_self_update = true` | Running on an rpm-ostree/atomic host (topgrade is package-managed there, not self-updating) |
-| `"chezmoi"` in `disable`, `[misc] last = ["Chezmoi Push"]`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
+| `"chezmoi"` in `disable`, `[misc] last = ["custom_commands"]`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
 | `"ScummVM Nightly"` custom command | `scummvm-nightly-update` is on `$PATH` |
 | `[containers] runtime = "podman"` | `podman` is on `$PATH` and `docker` is not |
+| `"waydroid"` in `disable` | only added when waydroid is **not** installed — if it is installed, it's left enabled so topgrade manages it too |
+
+> **Known issue:** if waydroid is installed but never initialized (`waydroid init` was never run), topgrade currently crashes outright when it probes `waydroid status` — this happens regardless of whether `waydroid` is in `disable`, and it's an upstream bug ([topgrade-rs/topgrade#869](https://github.com/topgrade-rs/topgrade/issues/869)), not something this script controls. Run `waydroid init` to fix it, or remove waydroid (`rpm-ostree override remove waydroid` on atomic hosts) if you don't use it.
 
 ### chezmoi integration
 
 If [chezmoi](https://www.chezmoi.io/) is installed and initialized (i.e. `chezmoi init` has already been run), the script runs `chezmoi add` on the topgrade config after ensuring it exists — bringing it under chezmoi's management if it isn't already. It only stages the file into chezmoi's source directory; it never commits or pushes on its own.
+
+## Credits
+
+- [topgrade](https://github.com/topgrade-rs/topgrade) — the tool this script installs and configures.
+- [lilay's Fedora/RHEL COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) — the package source used on Fedora, RHEL, AlmaLinux, and rpm-ostree/atomic hosts.
+- [Universal Blue / ublue-os](https://universal-blue.org/) — the theme-update custom commands pulled in via `[include]` on Bazzite and other ublue-os images.
+- [chezmoi](https://www.chezmoi.io/) — the dotfiles manager this script can optionally hand the generated config off to.
 
 ## License
 

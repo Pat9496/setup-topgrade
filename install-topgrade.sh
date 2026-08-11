@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly COPR_REPO="lilay/topgrade"
 readonly GITHUB_REPO="topgrade-rs/topgrade"
+FORCE_CONFIG=0
 
 log() {
     printf '[install-topgrade] %s\n' "$*"
@@ -90,9 +91,15 @@ configure_topgrade() {
 
     mkdir -p "$config_dir"
 
-    if [[ -f "$config_file" ]]; then
+    if [[ -f "$config_file" && "$FORCE_CONFIG" -ne 1 ]]; then
         log "Existing config found at ${config_file}; leaving it untouched"
     else
+        if [[ -f "$config_file" ]]; then
+            local backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
+            cp -p "$config_file" "$backup_file"
+            log "--force-config: existing config backed up to ${backup_file}, regenerating"
+        fi
+
         local include_paths_line=""
         if [[ -f /etc/ublue-os/topgrade.toml ]]; then
             log "ublue-os include: detected /etc/ublue-os/topgrade.toml, including it"
@@ -109,14 +116,30 @@ configure_topgrade() {
             log "rpm_ostree: not an atomic host, skipping"
         fi
 
-        local disable_line='disable = ["waydroid"]'
+        local disable_items=()
+        if command -v waydroid >/dev/null 2>&1; then
+            log "waydroid: installed, including it in updates (not disabling)"
+        else
+            log "waydroid: not installed, disabling it in generated config"
+            disable_items+=("waydroid")
+        fi
+
         local chezmoi_push_line=""
         if chezmoi_available; then
             log "chezmoi: available, including Chezmoi Push command"
-            disable_line='disable = ["waydroid","chezmoi"]'
+            disable_items+=("chezmoi")
             chezmoi_push_line="\"Chezmoi Push\" = '''chezmoi re-add && chezmoi git -- add -A && (chezmoi git -- diff --cached --quiet || chezmoi git -- commit -m \"\$(date '+%Y-%m-%d %H:%M:%S')\") && chezmoi git -- push'''"
         else
             log "chezmoi: not available, skipping"
+        fi
+
+        local disable_line
+        if [[ ${#disable_items[@]} -eq 0 ]]; then
+            disable_line="disable = []"
+        else
+            local disable_joined
+            disable_joined="$(printf '"%s",' "${disable_items[@]}")"
+            disable_line="disable = [${disable_joined%,}]"
         fi
 
         local scummvm_line=""
@@ -145,8 +168,8 @@ configure_topgrade() {
 
         local chezmoi_last_line=""
         if chezmoi_available; then
-            log "chezmoi last: available, ensuring Chezmoi Push runs last"
-            chezmoi_last_line='last = ["Chezmoi Push"]'
+            log "chezmoi last: available, ensuring custom commands (including Chezmoi Push) run last"
+            chezmoi_last_line='last = ["custom_commands"]'
         else
             log "chezmoi last: not available, skipping"
         fi
@@ -405,7 +428,34 @@ verify_installation() {
     log "topgrade installation complete."
 }
 
+usage() {
+    cat <<'EOF'
+Usage: install-topgrade.sh [--force-config]
+
+  --force-config   Regenerate ~/.config/topgrade.toml even if one already exists
+                   (the existing file is backed up first)
+EOF
+}
+
 main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force-config)
+                FORCE_CONFIG=1
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                log_error "Unrecognized argument: $1"
+                usage >&2
+                exit 1
+                ;;
+        esac
+    done
+
     log "==> Detecting environment"
 
     if topgrade_present; then
