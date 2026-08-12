@@ -4,6 +4,7 @@ set -euo pipefail
 readonly COPR_REPO="lilay/topgrade"
 readonly GITHUB_REPO="topgrade-rs/topgrade"
 FORCE_CONFIG=0
+PACKAGE_MANAGED=0
 
 log() {
     printf '[install-topgrade] %s\n' "$*"
@@ -30,8 +31,28 @@ topgrade_present() {
     return 1
 }
 
+topgrade_package_managed() {
+    if command -v rpm >/dev/null 2>&1 && rpm -q topgrade >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v apk >/dev/null 2>&1 && apk info -e topgrade >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v xbps-query >/dev/null 2>&1 && xbps-query topgrade >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v brew >/dev/null 2>&1 && brew list --formula topgrade >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 is_atomic_host() {
-    [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1
+    [[ -f /run/ostree-booted ]] && { command -v rpm-ostree >/dev/null 2>&1 || bootc_available; }
+}
+
+bootc_available() {
+    command -v bootc >/dev/null 2>&1
 }
 
 chezmoi_available() {
@@ -110,11 +131,18 @@ configure_topgrade() {
         fi
 
         local linux_rpm_ostree_line=""
+        local linux_bootc_line=""
         if is_atomic_host; then
-            log "rpm_ostree: atomic host detected, enabling rpm_ostree = true"
-            linux_rpm_ostree_line="rpm_ostree = true"
+            if bootc_available; then
+                log "bootc: atomic host detected and bootc available, enabling bootc = true (supersedes rpm_ostree)"
+                linux_bootc_line="bootc = true"
+            else
+                log "rpm_ostree: atomic host detected, enabling rpm_ostree = true"
+                linux_rpm_ostree_line="rpm_ostree = true"
+            fi
         else
             log "rpm_ostree: not an atomic host, skipping"
+            log "bootc: not an atomic host, skipping"
         fi
 
         local disable_items=()
@@ -163,11 +191,11 @@ configure_topgrade() {
         fi
 
         local no_self_update_line=""
-        if is_atomic_host; then
-            log "no_self_update: atomic host detected, enabling no_self_update = true"
+        if [[ "$PACKAGE_MANAGED" -eq 1 ]]; then
+            log "no_self_update: topgrade is package-managed on this host, enabling no_self_update = true"
             no_self_update_line="no_self_update = true"
         else
-            log "no_self_update: not an atomic host, skipping"
+            log "no_self_update: topgrade is not package-managed on this host (GitHub release binary), leaving self-update enabled"
         fi
 
         local chezmoi_last_line=""
@@ -219,6 +247,7 @@ configure_topgrade() {
         lines+=("redhat_distro_sync = false")
         lines+=("suse_dup = false")
         [[ -n "$linux_rpm_ostree_line" ]] && lines+=("$linux_rpm_ostree_line")
+        [[ -n "$linux_bootc_line" ]] && lines+=("$linux_bootc_line")
         lines+=("")
         lines+=("[mandb]")
         lines+=("enable = false")
@@ -305,12 +334,42 @@ install_via_copr_dnf() {
     run_privileged dnf -y copr enable "$COPR_REPO" && run_privileged dnf -y install topgrade
 }
 
+fedora_release_version() {
+    local version
+    command -v rpm >/dev/null 2>&1 || return 1
+    version=$(rpm --eval '%fedora' 2>/dev/null) || return 1
+    [[ "$version" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$version"
+}
+
 install_via_copr_rpmostree() {
-    # "dnf copr enable" only writes a .repo file under /etc/yum.repos.d, which
-    # remains writable on ostree systems even though /usr is read-only. The
-    # actual package layer must go through rpm-ostree, not dnf install.
+    # Atomic hosts must never depend on dnf: some rpm-ostree images (e.g.
+    # Bazzite/uBlue variants) don't ship a dnf binary at all, and dnf's own
+    # package install/removal semantics don't apply on ostree systems anyway.
+    # "dnf copr enable" only ever wrote a .repo file under /etc/yum.repos.d,
+    # so write that file directly and let rpm-ostree/libdnf pick it up.
     log "Enabling COPR repo ${COPR_REPO} and layering topgrade via rpm-ostree"
-    run_privileged dnf -y copr enable "$COPR_REPO" && run_privileged rpm-ostree install -y topgrade
+
+    local fedora_version
+    fedora_version=$(fedora_release_version) || {
+        log_error "Could not determine the underlying Fedora release version (rpm --eval '%fedora' failed)"
+        return 1
+    }
+
+    local repo_filename="${COPR_REPO//\//-}-fedora-${fedora_version}.repo"
+    local repo_url="https://copr.fedorainfracloud.org/coprs/${COPR_REPO}/repo/fedora-${fedora_version}/${repo_filename}"
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
+
+    log "Downloading COPR repo file from ${repo_url}"
+    download_file "$repo_url" "$tmpfile" || {
+        log_error "Failed to download COPR repo file for ${COPR_REPO} (fedora-${fedora_version})"
+        return 1
+    }
+
+    run_privileged install -m 0644 "$tmpfile" "/etc/yum.repos.d/${repo_filename}" && run_privileged rpm-ostree install -y topgrade
 }
 
 install_via_apk() {
@@ -464,29 +523,40 @@ main() {
 
     if topgrade_present; then
         log "topgrade is already installed; skipping installation"
+        if topgrade_package_managed; then
+            PACKAGE_MANAGED=1
+        fi
         configure_topgrade
         verify_installation
         exit 0
     fi
 
     if is_atomic_host; then
-        log "Detected OSTree-based atomic system (rpm-ostree)"
-        configure_topgrade
+        log "Detected OSTree-based atomic system"
 
         log "==> Installing topgrade"
-        if install_via_copr_rpmostree; then
-            log "topgrade has been staged via rpm-ostree and requires a reboot to become active."
-            offer_reboot
-            log "After rebooting, re-run this script to finish verification."
-            exit 0
+        if command -v rpm-ostree >/dev/null 2>&1; then
+            if install_via_copr_rpmostree; then
+                PACKAGE_MANAGED=1
+                configure_topgrade
+                log "topgrade has been staged via rpm-ostree and requires a reboot to become active."
+                offer_reboot
+                log "After rebooting, re-run this script to finish verification."
+                exit 0
+            fi
+            log "COPR/rpm-ostree install path failed; falling back to GitHub release binary"
+        else
+            log "rpm-ostree not available on this atomic host (bootc-only); skipping COPR/rpm-ostree layering, using GitHub release binary"
         fi
 
-        log "COPR/rpm-ostree install path failed; falling back to GitHub release binary"
         install_via_github_release
+        configure_topgrade
     else
         log "Detected traditional (non-atomic) Linux system"
         log "==> Installing topgrade"
-        if ! install_traditional; then
+        if install_traditional; then
+            PACKAGE_MANAGED=1
+        else
             log "No confirmed native package path succeeded; falling back to GitHub release binary"
             install_via_github_release
         fi
