@@ -12,15 +12,17 @@ Diese Seite auch auf [Englisch](README.md).
 - [Anforderungen](#anforderungen)
 - [Verwendung](#verwendung)
 - [Funktionsweise](#funktionsweise)
+- [Fedora-Atomic--Kinoite-Installationsmethoden](#fedora-atomic--kinoite-installationsmethoden)
 - [Konfiguration](#konfiguration)
 - [Quellen](#quellen)
 - [Lizenz](#lizenz)
 
 ## Features
 
-- **Funktioniert auf verschiedenen Distributionen.** Verwendet die dokumentierte Installationsmethode für topgrade jeder Distribution, sofern vorhanden (Fedora/RHEL über COPR, Alpine über `apk`, Void über `xbps-install`, Homebrew/Linuxbrew), und lädt ansonsten die vorkompilierte Binärdatei von GitHub Releases in `~/.local/bin` herunter.
-- **Behandelt atomare/unveränderliche Systeme korrekt.** Auf rpm-ostree-Hosts (Bazzite, Fedora Silverblue/Kinoite/Atomic) wird die `lilay/topgrade`-COPR-Repo-Datei direkt heruntergeladen und das Paket mit `rpm-ostree install` überlagert — kein `dnf`-Binary erforderlich — und das System wird nicht ohne Rückfrage neu gestartet. Auf atomaren Hosts ohne `rpm-ostree` (nur bootc, oder wenn die COPR-/rpm-ostree-Überlagerung fehlschlägt) wird stattdessen die Binärdatei von GitHub Releases heruntergeladen.
-- **Idempotent.** Kann sicher erneut ausgeführt werden. Bereits installiert? Das Skript springt direkt zur Konfiguration und Überprüfung. Bereits konfiguriert? Bestehende Konfigurationen werden nicht überschrieben.
+- **Funktioniert auf verschiedenen Distributionen.** Verwendet die dokumentierte Installationsmethode für topgrade jeder Distribution, sofern vorhanden (Fedora/RHEL über COPR auf klassischen Hosts, Alpine über `apk`, Void über `xbps-install`, Homebrew/Linuxbrew), und lädt ansonsten die vorkompilierte Binärdatei von GitHub Releases in `~/.local/bin` herunter.
+- **Gibt Fedora-Atomic-Nutzern eine klare Wahl.** Auf rpm-ostree-Hosts (Bazzite, Fedora Silverblue/Kinoite/Atomic) kann entweder die COPR/rpm-ostree-Paketintegration oder die offizielle Upstream-Binärdatei gewählt werden. Auf reinen bootc-Atomic-Hosts wird die Binärmethode verwendet.
+- **Härtet beide Atomic-Pfade.** Der COPR-Pfad beschränkt das hinzugefügte `lilay/topgrade`-Repo mit `includepkgs=topgrade`; der GitHub-Release-Pfad wählt das erwartete Linux-Asset aus den Release-Metadaten, verifiziert den von GitHub bereitgestellten SHA-256-Digest, sofern vorhanden, testet `topgrade --version` und aktiviert die neue Binärdatei erst nach erfolgreicher Prüfung atomar.
+- **Idempotent.** Kann sicher erneut ausgeführt werden. Bereits installiert? Das Skript springt direkt zur Konfiguration und Überprüfung. Bereits konfiguriert? Die Konfiguration wird nur mit `--force-config` neu erzeugt; kleine Installer-Policy-Reparaturen können mit zeitgestempeltem Backup angewendet werden.
 - **Wird mit einer sinnvollen Standardkonfiguration ausgeliefert**, wobei einige Teile (siehe [Konfiguration](#konfiguration)) nur hinzugefügt werden, wenn sie für das System tatsächlich relevant sind.
 - **Optionale [chezmoi](https://www.chezmoi.io/)-Integration.** Ist chezmoi installiert und initialisiert, wird die generierte Konfiguration automatisch unter chezmoi-Verwaltung gestellt.
 - **Keine unerwarteten Überraschungen.** Dieses Skript soll interaktiv von einer Person ausgeführt werden. Das System wird nicht neu gestartet und bestehende Konfigurationen werden nicht überschrieben, ohne dass eine Bestätigung erfolgt.
@@ -30,6 +32,7 @@ Diese Seite auch auf [Englisch](README.md).
 - Bash
 - `curl` oder `wget`
 - `sudo`, falls nicht bereits als root läuft und ein privilegierter Installationsschritt erforderlich ist
+- `python3`, zum sicheren Auswerten der GitHub-Release-Metadaten beim Installieren der Upstream-Binärdatei
 
 ## Verwendung
 
@@ -37,18 +40,42 @@ Diese Seite auch auf [Englisch](README.md).
 ./install-topgrade.sh
 ```
 
-Das Skript kann jederzeit erneut ausgeführt werden — es erkennt, was bereits abgeschlossen wurde, und setzt an der entsprechenden Stelle fort. Dies ist auf rpm-ostree-Atomic-Hosts zu erwarten: Bei einer neuen Installation wird das Paket über `rpm-ostree` bereitgestellt, was einen Reboot benötigt, um aktiv zu werden, und das Skript wird nicht ohne Rückfrage neu gestartet. Wird diese Rückfrage abgelehnt (oder läuft das Skript in einer nicht-interaktiven Shell, in der es gar nicht fragt), kann der Reboot manuell durchgeführt und das Skript anschließend erneut ausgeführt werden, um die Installation abzuschließen. Auf reinen bootc-Atomic-Hosts ohne `rpm-ostree` wird topgrade als Binärdatei von GitHub Releases installiert, daher ist kein Reboot erforderlich.
+Das Skript kann jederzeit erneut ausgeführt werden — es erkennt, was bereits abgeschlossen wurde, und setzt an der entsprechenden Stelle fort.
+
+Auf Fedora Atomic / Kinoite kann die Installationsmethode explizit gewählt werden:
+
+```bash
+./install-topgrade.sh --install-method=binary
+./install-topgrade.sh --install-method=copr
+```
+
+Zusätzlich gibt es Aliase:
+
+```bash
+./install-topgrade.sh --binary
+./install-topgrade.sh --copr
+```
+
+Interaktive Atomic-Sitzungen fragen nach, wenn keine Methode angegeben wurde. Nicht-interaktive Atomic-Sitzungen verwenden standardmäßig die Binärmethode, weil sie keine Root-Rechte, kein Host-Paket-Layering und keinen Reboot benötigt.
+
+Um eine bestimmte Upstream-Binärversion zu installieren:
+
+```bash
+./install-topgrade.sh --binary --version v17.9.0
+```
+
+oder `TOPGRADE_VERSION=v17.9.0` setzen.
 
 ## Funktionsweise
 
-topgrade wird in den offiziellen Repositories von Fedora, RHEL oder AlmaLinux nicht paketiert. Auf diesen Distributionen (und auf rpm-ostree/atomaren Hosts, die davon abgeleitet sind) installiert dieses Skript topgrade aus [lilays `lilay/topgrade` COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) — die dokumentierte Methode, um es über `dnf` oder `rpm-ostree` zu erhalten.
+topgrade wird in den offiziellen Repositories von Fedora, RHEL oder AlmaLinux nicht paketiert. Auf klassischen Fedora/RHEL-Systemen kann dieses Skript topgrade aus [lilays `lilay/topgrade` COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) via `dnf` installieren. Auf Fedora-Atomic-Hosts unterstützt das Skript sowohl das COPR/rpm-ostree-Paketmodell als auch das offizielle Upstream-Binärmodell.
 
 Das Skript wählt seine Installationsstrategie basierend auf dem erkannten System:
 
 | System | Strategie |
 |---|---|
-| Bazzite, Fedora Silverblue/Kinoite/Atomic (rpm-ostree vorhanden) | Lädt die `lilay/topgrade`-COPR-Repo-Datei direkt herunter (kein `dnf` erforderlich) und überlagert das Paket mit `rpm-ostree install`, fragt vor dem Reboot nach |
-| Atomarer Host ohne `rpm-ostree` (nur bootc), oder wenn die COPR-/rpm-ostree-Überlagerung fehlschlägt | Lädt die neueste Release-Binärdatei von GitHub in `~/.local/bin/topgrade` herunter |
+| Bazzite, Fedora Silverblue/Kinoite/Atomic (`rpm-ostree` vorhanden) | Nachfrage oder explizites `--install-method`: COPR/rpm-ostree-Paketintegration oder Upstream-Binärdatei in `~/.local/bin/topgrade` |
+| Atomarer Host ohne `rpm-ostree` (nur bootc) | Lädt die offizielle Upstream-Binärdatei von GitHub Releases nach `~/.local/bin/topgrade` |
 | Fedora / RHEL / AlmaLinux (nicht-atomar) | Aktiviert das `lilay/topgrade`-COPR, installiert mit `dnf install` |
 | Alpine | `apk add topgrade` |
 | Void Linux | `xbps-install -Sy topgrade` |
@@ -57,9 +84,29 @@ Das Skript wählt seine Installationsstrategie basierend auf dem erkannten Syste
 
 Privilegierte Schritte werden unter `sudo` ausgeführt. Läuft das Skript bereits als root, wird `sudo` übersprungen — dann ist das `sudo`-Binary nicht erforderlich.
 
+## Fedora Atomic / Kinoite Installationsmethoden
+
+Fedora-Atomic-Nutzer können zwischen zwei unterstützten Besitzmodellen wählen. Keine Methode ist grundsätzlich falsch; sie haben unterschiedliche Abwägungen.
+
+| Thema | COPR / rpm-ostree | Upstream-Binärdatei |
+|---|---|---|
+| Installationsort | Host-Deployment (`/usr/bin/topgrade`) | `~/.local/bin/topgrade` |
+| Root erforderlich | Ja | Nein |
+| Reboot erforderlich | Ja | Nein |
+| Fügt Drittanbieter-RPM-Repo hinzu | Ja, das spezifische `lilay/topgrade` COPR | Nein |
+| Repo-Scope | Mit `includepkgs=topgrade` eingeschränkt, wo unterstützt | N/A |
+| Topgrade-Updates | rpm-ostree | Eingebautes Self-Update von `topgrade-rs/topgrade` |
+| Host-Paket-Layering | Ja | Nein |
+| Paketmanager-Integration | Sehr gut | Keine |
+| Einfache Deinstallation | `rpm-ostree uninstall topgrade` + Reboot | `~/.local/bin/topgrade` löschen |
+
+Die COPR-Methode fügt das spezifische `lilay/topgrade`-Repository hinzu und installiert Topgrade als gelayertes RPM über rpm-ostree. Das aktiviert keine beliebigen COPR-Repositories. Der Installer beschränkt dieses Repository mit `includepkgs=topgrade` auf das Paket `topgrade`, aber man vertraut weiterhin dem Maintainer dieses COPR-Projekts für das Topgrade-RPM und dessen Updates.
+
+Die Binärmethode installiert das offizielle Topgrade-Release direkt nach `~/.local/bin`, ohne ein RPM-Repository hinzuzufügen oder ein Paket ins Betriebssystem zu layern. Topgrade aktualisiert sich danach selbst aus den offiziellen `topgrade-rs/topgrade`-Upstream-Releases.
+
 ## Konfiguration
 
-topgrade liest seine Konfiguration aus `${XDG_CONFIG_HOME:-~/.config}/topgrade.toml`. Existiert diese Datei noch nicht, erstellt das Skript eine. **Bestehende Konfigurationen werden niemals angetastet oder überschrieben.**
+topgrade liest seine Konfiguration aus `${XDG_CONFIG_HOME:-~/.config}/topgrade.toml`. Existiert diese Datei noch nicht, erstellt das Skript eine. Bestehende Konfigurationen werden nur mit `--force-config` neu erzeugt, aber das Skript kann kleine Policy-Reparaturen mit zeitgestempeltem Backup vornehmen: zum Beispiel `rpm_ostree = true` auf Atomic-Hosts sicherstellen oder `no_self_update = true` auf `false` ändern, wenn Topgrade als user-lokale Upstream-Binärdatei installiert ist.
 
 Die generierte Konfiguration enthält einige Teile bedingt, basierend darauf, was tatsächlich auf dem System vorhanden ist:
 
@@ -68,7 +115,7 @@ Die generierte Konfiguration enthält einige Teile bedingt, basierend darauf, wa
 | `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` existiert (ublue-os/Bazzite theme-update-Befehle) — da `~/.config/topgrade.toml` in `toolbx`/`distrobox`-Container eingebunden wird, kann dies dort einen harmlosen `Unable to read /etc/ublue-os/topgrade.toml`-Fehler protokollieren; das Skript gibt einen Hinweis aus, wenn es die Zeile hinzufügt |
 | `[linux] rpm_ostree = true` | Wird auf einem atomaren Host ausgeführt, auf dem `rpm-ostree` verfügbar ist (hat Vorrang vor `bootc`) |
 | `[linux] bootc = true` | Wird auf einem atomaren Host ausgeführt, auf dem `rpm-ostree` nicht verfügbar ist, aber `bootc` (reiner bootc-Host ohne anderen unterstützten Paketmanager) |
-| `[misc] no_self_update = true` | topgrade wurde tatsächlich über einen Paketmanager installiert (COPR+`rpm-ostree install`, `dnf`, `apk`, `xbps-install` oder Homebrew) — nicht allein deshalb, weil es sich um einen atomaren Host handelt. Reine bootc-Hosts ohne `rpm-ostree` erhalten die Binärdatei von GitHub Releases und erhalten daher **kein** `no_self_update = true` |
+| `[misc] no_self_update = true` | topgrade wurde tatsächlich über einen Paketmanager installiert (`dnf`, COPR/rpm-ostree, `apk`, `xbps-install` oder Homebrew). Atomic-Binärinstallationen lassen Self-Update aktiviert |
 | `"chezmoi"` in `disable`, `[misc] last = ["custom_commands"]`, plus ein `"Chezmoi Push"`-Befehl | chezmoi ist installiert und initialisiert |
 | `"ScummVM Nightly"`-Befehl | `scummvm-nightly-update` ist in `$PATH` |
 | `[containers] runtime = "podman"` | `podman` ist in `$PATH` und `docker` ist nicht |
@@ -92,7 +139,7 @@ Das Skript stellt nur die topgrade-Konfiguration in das chezmoi-Quellverzeichnis
 ## Quellen
 
 - [topgrade](https://github.com/topgrade-rs/topgrade) — das Werkzeug, das dieses Skript installiert und konfiguriert.
-- [lilays Fedora/RHEL COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) — die Paketquelle, die auf Fedora, RHEL, AlmaLinux und rpm-ostree/atomaren Hosts verwendet wird.
+- [lilays Fedora/RHEL COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) — die Paketquelle für klassische Fedora/RHEL-Systeme und optionale COPR/rpm-ostree-Atomic-Installationen.
 - [Universal Blue / ublue-os](https://universal-blue.org/) — die theme-update-Befehle, die auf Bazzite und anderen ublue-os-Images über `[include]` eingebunden werden.
 - [chezmoi](https://www.chezmoi.io/) — der Dotfiles-Manager, an den dieses Skript die generierte Konfiguration optional übergeben kann.
 
