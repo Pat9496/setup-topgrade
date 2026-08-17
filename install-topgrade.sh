@@ -133,12 +133,12 @@ configure_topgrade() {
         local linux_rpm_ostree_line=""
         local linux_bootc_line=""
         if is_atomic_host; then
-            if bootc_available; then
-                log "bootc: atomic host detected and bootc available, enabling bootc = true (supersedes rpm_ostree)"
-                linux_bootc_line="bootc = true"
-            else
-                log "rpm_ostree: atomic host detected, enabling rpm_ostree = true"
+            if command -v rpm-ostree >/dev/null 2>&1; then
+                log "rpm_ostree: atomic host detected and rpm-ostree available, enabling rpm_ostree = true"
                 linux_rpm_ostree_line="rpm_ostree = true"
+            elif bootc_available; then
+                log "bootc: atomic host detected, rpm-ostree not available, enabling bootc = true"
+                linux_bootc_line="bootc = true"
             fi
         else
             log "rpm_ostree: not an atomic host, skipping"

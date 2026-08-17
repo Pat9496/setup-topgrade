@@ -50,9 +50,9 @@ The generated config includes a few pieces conditionally, based on what's actual
 | Config piece | Included when |
 |---|---|
 | `[include] paths = ["/etc/ublue-os/topgrade.toml"]` | `/etc/ublue-os/topgrade.toml` exists (ublue-os/Bazzite theme-update commands) — since `~/.config/topgrade.toml` is shared into `toolbx`/`distrobox` containers, this may log a harmless `Unable to read /etc/ublue-os/topgrade.toml` error there; the script prints a heads-up about this when it adds the line |
-| `[linux] bootc = true` | Running on an atomic host where `bootc` is available (takes precedence over `rpm_ostree`) |
-| `[linux] rpm_ostree = true` | Running on an rpm-ostree atomic host without `bootc` available |
-| `[misc] no_self_update = true` | topgrade is package-managed on this host (installed via COPR/rpm-ostree, `apk`, `xbps`, or Homebrew) rather than the GitHub release binary |
+| `[linux] rpm_ostree = true` | Running on an atomic host where `rpm-ostree` is available (takes precedence over `bootc`) |
+| `[linux] bootc = true` | Running on an atomic host where `rpm-ostree` is not available, but `bootc` is (a bootc-only host without another supported package manager) |
+| `[misc] no_self_update = true` | topgrade was actually installed via a package manager (COPR+`rpm-ostree install`, `dnf`, `apk`, `xbps-install`, or Homebrew) — not merely because the host is atomic. bootc-only hosts without `rpm-ostree` get the GitHub release binary instead and therefore do **not** get `no_self_update = true` |
 | `"chezmoi"` in `disable`, `[misc] last = ["custom_commands"]`, plus a `"Chezmoi Push"` custom command | chezmoi is installed and initialized |
 | `"ScummVM Nightly"` custom command | `scummvm-nightly-update` is on `$PATH` |
 | `[containers] runtime = "podman"` | `podman` is on `$PATH` and `docker` is not |
@@ -64,7 +64,14 @@ The generated config includes a few pieces conditionally, based on what's actual
 
 ### chezmoi integration
 
-If [chezmoi](https://www.chezmoi.io/) is installed and initialized (i.e. `chezmoi init` has already been run), the script runs `chezmoi add` on the topgrade config after ensuring it exists — bringing it under chezmoi's management if it isn't already. It only stages the file into chezmoi's source directory; it never commits or pushes on its own.
+If [chezmoi](https://www.chezmoi.io/) is installed and initialized (i.e. `chezmoi init` has already been run), the script runs `chezmoi add` on the topgrade config after ensuring it exists — bringing it under chezmoi's management if it isn't already.
+
+The script also disables topgrade's built-in `chezmoi` step (by adding `"chezmoi"` to `disable`) and replaces it with its own `"Chezmoi Push"` command in `[commands]`. This serves two purposes:
+
+1. **Direction/safety:** topgrade's built-in `chezmoi` step runs `chezmoi update` — a pure pull-and-apply operation that automatically and unattended applies changes from the chezmoi remote to the local system. That conflicts with this script's design principle of no unattended surprises. Instead, the script's own command only ensures local changes (particularly the newly generated or adjusted `topgrade.toml`) are saved and pushed to the remote — a write operation, where there's no risk of unwanted changes landing on the local system.
+2. **Order/completeness:** the custom `"Chezmoi Push"` command is guaranteed to run after all other topgrade steps, via `[misc] last = ["custom_commands"]`. This ensures any local changes made during that topgrade run are captured in a single commit. topgrade's built-in `chezmoi` step has no controllable position relative to other steps, so it's replaced by the custom command rather than run alongside it (which could cause conflicts between pull and push in the same run).
+
+The script itself only stages the config file into chezmoi's source directory; it never commits or pushes on its own — that happens later, when topgrade runs the `"Chezmoi Push"` command.
 
 ## Credits
 
