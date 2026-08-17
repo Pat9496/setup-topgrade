@@ -27,6 +27,8 @@ Run it again any time — it detects what's already done and picks up where it l
 
 ## How it works
 
+topgrade is not packaged in Fedora, RHEL, or AlmaLinux's official repositories. On those distros (and on rpm-ostree/atomic hosts derived from them), this script installs topgrade from [lilay's `lilay/topgrade` COPR](https://copr.fedorainfracloud.org/coprs/lilay/topgrade/) — the documented way to get it via `dnf` or `rpm-ostree`.
+
 The script picks its install strategy based on what it detects:
 
 | System | Strategy |
