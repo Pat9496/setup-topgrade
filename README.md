@@ -1,6 +1,6 @@
 # setup-topgrade
 
-[](https://github.com/Pat9496/setup-topgrade/actions/workflows/shellcheck.yml) [](LICENSE) [](https://www.gnu.org/software/bash/) [](https://www.kernel.org/)
+[![ShellCheck](https://github.com/Pat9496/setup-topgrade/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/Pat9496/setup-topgrade/actions/workflows/shellcheck.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)](https://www.gnu.org/software/bash/) [![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black)](https://www.kernel.org/)
 
 A single Bash script that installs and configures [topgrade](https://github.com/topgrade-rs/topgrade) — the tool that runs all of your system's update commands (apt/dnf/flatpak/cargo/firmware/etc.) in one go — on any Linux distro, including OSTree-based atomic/immutable systems like Bazzite and Fedora Silverblue/Kinoite/Atomic, and bootc-based atomic hosts.
 
