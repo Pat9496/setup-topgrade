@@ -5,6 +5,9 @@ readonly COPR_REPO="lilay/topgrade"
 readonly GITHUB_REPO="topgrade-rs/topgrade"
 FORCE_CONFIG=0
 PACKAGE_MANAGED=0
+TOPGRADE_VERSION="${TOPGRADE_VERSION:-}"
+INSTALL_METHOD="${TOPGRADE_INSTALL_METHOD:-}"
+ATOMIC_INSTALL_METHOD=""
 
 log() {
     printf '[install-topgrade] %s\n' "$*"
@@ -55,6 +58,58 @@ bootc_available() {
     command -v bootc >/dev/null 2>&1
 }
 
+validate_install_method() {
+    local method="$1"
+    case "$method" in
+        ""|binary|copr) return 0 ;;
+        *)
+            log_error "Invalid install method '${method}'. Use --install-method=binary or --install-method=copr."
+            return 1
+            ;;
+    esac
+}
+
+choose_atomic_install_method() {
+    ATOMIC_INSTALL_METHOD="$INSTALL_METHOD"
+    if [[ -n "$ATOMIC_INSTALL_METHOD" ]]; then
+        validate_install_method "$ATOMIC_INSTALL_METHOD" || return 1
+        return 0
+    fi
+
+    if [[ ! -t 0 ]]; then
+        log "Atomic install method: no method specified in a non-interactive session; defaulting to official upstream binary"
+        ATOMIC_INSTALL_METHOD="binary"
+        return 0
+    fi
+
+    cat >&2 <<'EOF'
+[install-topgrade] Topgrade can be installed in two ways on Fedora Atomic:
+[install-topgrade]
+[install-topgrade] 1. COPR / rpm-ostree
+[install-topgrade]    - Integrates Topgrade into the host package manager
+[install-topgrade]    - Adds the specific lilay/topgrade COPR repository
+[install-topgrade]    - Restricts that repository to the topgrade package where supported
+[install-topgrade]    - Requires sudo and a reboot
+[install-topgrade]    - Topgrade updates through rpm-ostree
+[install-topgrade]
+[install-topgrade] 2. Official upstream binary
+[install-topgrade]    - Installs to ~/.local/bin/topgrade
+[install-topgrade]    - Does not add a COPR repository or layer a package into the OS
+[install-topgrade]    - Does not require sudo or a reboot
+[install-topgrade]    - Topgrade updates itself from topgrade-rs/topgrade
+EOF
+
+    local answer
+    while true; do
+        read -r -p "[install-topgrade] Choose installation method [1=copr, 2=binary, default 2]: " answer
+        case "$answer" in
+            1|copr|COPR) ATOMIC_INSTALL_METHOD="copr"; return 0 ;;
+            ""|2|binary|BINARY) ATOMIC_INSTALL_METHOD="binary"; return 0 ;;
+            *) log_error "Please choose 1 for COPR/rpm-ostree or 2 for the upstream binary." ;;
+        esac
+    done
+}
+
 chezmoi_available() {
     local source_path
     command -v chezmoi >/dev/null 2>&1 || return 1
@@ -74,35 +129,219 @@ run_privileged() {
     fi
 }
 
-fetch_url() {
-    local url="$1"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- "$url"
-    else
-        log_error "Neither curl nor wget is available to reach ${url}"
-        return 1
-    fi
-}
-
 download_file() {
     local url="$1" dest="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$dest" "$url"
+        curl -fL --retry 3 --retry-delay 2 \
+            -H "User-Agent: setup-topgrade" \
+            -o "$dest" "$url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$dest" "$url"
+        wget -qO "$dest" --header="User-Agent: setup-topgrade" "$url"
     else
         log_error "Neither curl nor wget is available to download ${url}"
         return 1
     fi
 }
 
-fetch_latest_tag() {
-    local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
-    local response
-    response=$(fetch_url "$api_url") || return 1
-    printf '%s\n' "$response" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+fetch_release_metadata() {
+    local tag="$1" dest="$2"
+    local api_url
+    if [[ -n "$tag" ]]; then
+        api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}"
+    else
+        api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        local http_status
+        http_status=$(curl -sS -L \
+            -H "User-Agent: setup-topgrade" \
+            -H "Accept: application/vnd.github+json" \
+            -w '%{http_code}' \
+            -o "$dest" \
+            "$api_url") || {
+            log_error "GitHub release lookup failed: network/TLS error. No changes were made."
+            return 1
+        }
+        if [[ "$http_status" != "200" ]]; then
+            case "$http_status" in
+                403) log_error "GitHub release lookup failed: HTTP 403 (possibly API rate-limited). Retry later or use --version vX.Y.Z." ;;
+                404) log_error "GitHub release lookup failed: HTTP 404 for ${tag:-latest release}. Check --version value." ;;
+                429) log_error "GitHub release lookup failed: HTTP 429 (rate limited). Retry later or use --version vX.Y.Z." ;;
+                5*) log_error "GitHub release lookup failed: HTTP ${http_status} from GitHub. Retry later or use --version vX.Y.Z." ;;
+                *) log_error "GitHub release lookup failed: HTTP ${http_status}. No changes were made." ;;
+            esac
+            return 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$dest" \
+            --header="User-Agent: setup-topgrade" \
+            --header="Accept: application/vnd.github+json" \
+            "$api_url" || {
+            log_error "GitHub release lookup failed. Retry later or use --version vX.Y.Z."
+            return 1
+        }
+    else
+        log_error "Neither curl nor wget is available to query GitHub releases"
+        return 1
+    fi
+}
+
+parse_release_asset() {
+    local metadata_file="$1" target_triple="$2"
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_error "python3 is required to parse GitHub release metadata safely"
+        return 1
+    fi
+    python3 - "$metadata_file" "$target_triple" <<'PY'
+import json, re, sys
+path, target = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception as exc:
+    raise SystemExit(f"JSON parse failure: {exc}")
+tag = data.get("tag_name")
+if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", tag):
+    raise SystemExit("Release metadata does not contain a valid tag_name")
+expected = f"topgrade-{tag}-{target}.tar.gz"
+matches = [a for a in data.get("assets", []) if a.get("name") == expected]
+if len(matches) != 1:
+    names = ", ".join(a.get("name", "<unnamed>") for a in data.get("assets", []))
+    raise SystemExit(f"Expected exactly one asset named {expected}, found {len(matches)}. Available assets: {names}")
+asset = matches[0]
+url = asset.get("browser_download_url")
+digest = asset.get("digest") or ""
+if not isinstance(url, str) or not url.startswith("https://github.com/"):
+    raise SystemExit("Selected release asset is missing a valid GitHub download URL")
+if digest and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+    raise SystemExit("Selected release asset has an invalid digest field")
+print(tag)
+print(expected)
+print(url)
+print(digest)
+PY
+}
+
+verify_archive_digest() {
+    local archive="$1" expected_digest="$2"
+    [[ -n "$expected_digest" ]] || {
+        log "Release asset digest: not present in GitHub metadata; continuing without digest verification"
+        return 0
+    }
+    command -v sha256sum >/dev/null 2>&1 || {
+        log_error "sha256sum is required because this release asset includes a SHA-256 digest"
+        return 1
+    }
+    local expected actual
+    expected="${expected_digest#sha256:}"
+    actual=$(sha256sum "$archive" | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+        log_error "Downloaded Topgrade release but SHA-256 verification failed. Existing Topgrade binary was left untouched."
+        return 1
+    fi
+    log "Release asset digest: verified"
+}
+
+assert_safe_tar_archive() {
+    local archive="$1" listing="$2"
+    tar -tzf "$archive" > "$listing"
+    if grep -Eq '(^/|(^|/)\.\.(/|$))' "$listing"; then
+        log_error "Release archive contains an unsafe absolute or parent-directory path"
+        return 1
+    fi
+}
+
+backup_config_once() {
+    local config_file="$1"
+    local backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$config_file" "$backup_file"
+    printf '%s\n' "$backup_file"
+}
+
+ensure_section_key() {
+    local config_file="$1" section="$2" key="$3" value="$4"
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$config_file"; then
+        if grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*${value}([[:space:]]*(#.*)?)?$" "$config_file"; then
+            return 0
+        fi
+        python3 - "$config_file" "$key" "$value" <<'PY'
+import re, sys
+path, key, value = sys.argv[1:4]
+lines = open(path, encoding='utf-8').read().splitlines()
+pat = re.compile(rf'^(\s*{re.escape(key)}\s*=).*$')
+for i, line in enumerate(lines):
+    if pat.match(line):
+        lines[i] = f'{key} = {value}'
+        break
+open(path, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+PY
+        return 0
+    fi
+
+    python3 - "$config_file" "$section" "$key" "$value" <<'PY'
+import re, sys
+path, section, key, value = sys.argv[1:5]
+lines = open(path, encoding='utf-8').read().splitlines()
+header = f'[{section}]'
+for i, line in enumerate(lines):
+    if line.strip() == header:
+        j = i + 1
+        while j < len(lines) and not re.match(r'^\s*\[.*\]\s*$', lines[j]):
+            j += 1
+        lines.insert(j, f'{key} = {value}')
+        break
+else:
+    if lines and lines[-1].strip():
+        lines.append('')
+    lines.extend([header, f'{key} = {value}'])
+open(path, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+PY
+}
+
+repair_existing_config() {
+    local config_file="$1"
+    local changed=0 backup_file=""
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        log "Existing config found at ${config_file}; python3 unavailable, leaving it untouched"
+        return 0
+    fi
+
+    if is_atomic_host; then
+        if command -v rpm-ostree >/dev/null 2>&1 && ! grep -Eq '^[[:space:]]*rpm_ostree[[:space:]]*=[[:space:]]*true([[:space:]]*(#.*)?)?$' "$config_file"; then
+            [[ -n "$backup_file" ]] || backup_file=$(backup_config_once "$config_file")
+            ensure_section_key "$config_file" "linux" "rpm_ostree" "true"
+            log "Updated existing config: ensured [linux] rpm_ostree = true"
+            changed=1
+        elif ! command -v rpm-ostree >/dev/null 2>&1 && bootc_available && ! grep -Eq '^[[:space:]]*bootc[[:space:]]*=[[:space:]]*true([[:space:]]*(#.*)?)?$' "$config_file"; then
+            [[ -n "$backup_file" ]] || backup_file=$(backup_config_once "$config_file")
+            ensure_section_key "$config_file" "linux" "bootc" "true"
+            log "Updated existing config: ensured [linux] bootc = true"
+            changed=1
+        fi
+    fi
+
+    if [[ "$PACKAGE_MANAGED" -eq 1 ]]; then
+        if ! grep -Eq '^[[:space:]]*no_self_update[[:space:]]*=[[:space:]]*true([[:space:]]*(#.*)?)?$' "$config_file"; then
+            [[ -n "$backup_file" ]] || backup_file=$(backup_config_once "$config_file")
+            ensure_section_key "$config_file" "misc" "no_self_update" "true"
+            log "Updated existing config: package-managed install uses [misc] no_self_update = true"
+            changed=1
+        fi
+    else
+        if grep -Eq '^[[:space:]]*no_self_update[[:space:]]*=[[:space:]]*true([[:space:]]*(#.*)?)?$' "$config_file"; then
+            [[ -n "$backup_file" ]] || backup_file=$(backup_config_once "$config_file")
+            ensure_section_key "$config_file" "misc" "no_self_update" "false"
+            log "Updated existing config: user-local GitHub release binary uses [misc] no_self_update = false"
+            changed=1
+        fi
+    fi
+
+    if [[ "$changed" -eq 1 ]]; then
+        log "Existing config was minimally repaired; backup saved to ${backup_file}"
+    else
+        log "Existing config found at ${config_file}; no installer policy changes needed"
+    fi
 }
 
 configure_topgrade() {
@@ -113,7 +352,7 @@ configure_topgrade() {
     mkdir -p "$config_dir"
 
     if [[ -f "$config_file" && "$FORCE_CONFIG" -ne 1 ]]; then
-        log "Existing config found at ${config_file}; leaving it untouched"
+        repair_existing_config "$config_file"
     else
         if [[ -f "$config_file" ]]; then
             local backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
@@ -342,13 +581,25 @@ fedora_release_version() {
     printf '%s\n' "$version"
 }
 
+restrict_copr_repo_to_topgrade() {
+    local repo_file="$1"
+    if grep -Eq '^[[:space:]]*includepkgs[[:space:]]*=' "$repo_file"; then
+        sed -i -E 's/^[[:space:]]*includepkgs[[:space:]]*=.*/includepkgs=topgrade/' "$repo_file"
+    else
+        printf '
+includepkgs=topgrade
+' >> "$repo_file"
+    fi
+    log "COPR repository scope: restricted to includepkgs=topgrade"
+}
+
 install_via_copr_rpmostree() {
     # Atomic hosts must never depend on dnf: some rpm-ostree images (e.g.
     # Bazzite/uBlue variants) don't ship a dnf binary at all, and dnf's own
     # package install/removal semantics don't apply on ostree systems anyway.
     # "dnf copr enable" only ever wrote a .repo file under /etc/yum.repos.d,
     # so write that file directly and let rpm-ostree/libdnf pick it up.
-    log "Enabling COPR repo ${COPR_REPO} and layering topgrade via rpm-ostree"
+    log "Enabling specific COPR repo ${COPR_REPO} and layering topgrade via rpm-ostree"
 
     local fedora_version
     fedora_version=$(fedora_release_version) || {
@@ -361,15 +612,19 @@ install_via_copr_rpmostree() {
 
     local tmpfile
     tmpfile=$(mktemp)
-    trap 'rm -f "$tmpfile"' RETURN
 
     log "Downloading COPR repo file from ${repo_url}"
     download_file "$repo_url" "$tmpfile" || {
+        rm -f "$tmpfile"
         log_error "Failed to download COPR repo file for ${COPR_REPO} (fedora-${fedora_version})"
         return 1
     }
+    restrict_copr_repo_to_topgrade "$tmpfile"
 
     run_privileged install -m 0644 "$tmpfile" "/etc/yum.repos.d/${repo_filename}" && run_privileged rpm-ostree install -y topgrade
+    local install_status=$?
+    rm -f "$tmpfile"
+    return "$install_status"
 }
 
 install_via_apk() {
@@ -388,50 +643,88 @@ install_via_brew() {
 }
 
 install_via_github_release() {
-    log "==> Installing topgrade from GitHub releases"
+    log "==> Installing topgrade from official GitHub releases (${GITHUB_REPO})"
+    log "Installation scope: user"
+    log "COPR: not used"
+    log "rpm-ostree package layering: not used"
 
-    local kernel_arch arch
+    local kernel_arch target_triple
     kernel_arch=$(uname -m)
     case "$kernel_arch" in
-        x86_64) arch="x86_64" ;;
-        aarch64) arch="aarch64" ;;
-        arm64) arch="aarch64" ;;
+        x86_64) target_triple="x86_64-unknown-linux-gnu" ;;
+        aarch64) target_triple="aarch64-unknown-linux-gnu" ;;
+        arm64) target_triple="aarch64-unknown-linux-gnu" ;;
         *)
             log_error "Unsupported architecture: ${kernel_arch}"
             return 1
             ;;
     esac
 
-    local tag
-    tag=$(fetch_latest_tag) || { log_error "Failed to determine latest topgrade release tag"; return 1; }
-    if [[ -z "$tag" ]]; then
-        log_error "Could not parse latest release tag from GitHub API response"
+    local requested_tag="${TOPGRADE_VERSION}"
+    if [[ -n "$requested_tag" && ! "$requested_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+        log_error "Invalid --version value '${requested_tag}'. Expected a tag like v17.9.0."
         return 1
     fi
 
-    local asset_url="https://github.com/${GITHUB_REPO}/releases/download/${tag}/topgrade-${tag}-${arch}-unknown-linux-gnu.tar.gz"
-
     local tmpdir
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' RETURN
 
-    local archive="${tmpdir}/topgrade.tar.gz"
+    local metadata="${tmpdir}/release.json"
+    fetch_release_metadata "$requested_tag" "$metadata" || { rm -rf "$tmpdir"; return 1; }
+
+    local parsed tag asset_name asset_url asset_digest
+    parsed=$(parse_release_asset "$metadata" "$target_triple") || {
+        rm -rf "$tmpdir"
+        log_error "Could not select a matching Linux release asset for ${target_triple}"
+        return 1
+    }
+    tag=$(printf '%s\n' "$parsed" | sed -n '1p')
+    asset_name=$(printf '%s\n' "$parsed" | sed -n '2p')
+    asset_url=$(printf '%s\n' "$parsed" | sed -n '3p')
+    asset_digest=$(printf '%s\n' "$parsed" | sed -n '4p')
+
+    local archive="${tmpdir}/${asset_name}"
+    log "Selected release: ${tag}"
+    log "Selected asset: ${asset_name}"
     log "Downloading ${asset_url}"
-    download_file "$asset_url" "$archive" || { log_error "Failed to download topgrade release asset"; return 1; }
+    download_file "$asset_url" "$archive" || { rm -rf "$tmpdir"; log_error "Failed to download topgrade release asset. No changes were made."; return 1; }
+    verify_archive_digest "$archive" "$asset_digest" || { rm -rf "$tmpdir"; return 1; }
 
+    local listing="${tmpdir}/archive.list"
+    assert_safe_tar_archive "$archive" "$listing" || { rm -rf "$tmpdir"; return 1; }
     tar -xzf "$archive" -C "$tmpdir"
 
-    local bin_path
-    bin_path=$(find "$tmpdir" -type f -name topgrade -print -quit)
-    if [[ -z "$bin_path" ]]; then
-        log_error "topgrade binary not found inside downloaded archive"
+    local candidates=()
+    while IFS= read -r candidate; do
+        candidates+=("$candidate")
+    done < <(find "$tmpdir" -type f -name topgrade -print)
+    if [[ ${#candidates[@]} -ne 1 ]]; then
+        rm -rf "$tmpdir"
+        log_error "Expected exactly one topgrade binary inside downloaded archive, found ${#candidates[@]}"
+        return 1
+    fi
+    local bin_path="${candidates[0]}"
+
+    chmod 0755 "$bin_path"
+    if ! "$bin_path" --version | grep -F "${tag#v}" >/dev/null 2>&1; then
+        rm -rf "$tmpdir"
+        log_error "Downloaded topgrade binary did not report expected version ${tag}. Existing binary was left untouched."
         return 1
     fi
 
     mkdir -p "${HOME}/.local/bin"
-    install -m 0755 "$bin_path" "${HOME}/.local/bin/topgrade"
-    log "Installed topgrade binary to ${HOME}/.local/bin/topgrade"
+    local install_path="${HOME}/.local/bin/topgrade"
+    local new_path="${HOME}/.local/bin/.topgrade.new.$$"
+    local previous_path="${HOME}/.local/bin/topgrade.previous"
+    install -m 0755 "$bin_path" "$new_path"
+    if [[ -e "$install_path" ]]; then
+        cp -p "$install_path" "$previous_path"
+    fi
+    mv -f "$new_path" "$install_path"
+    log "Installed topgrade binary to ${install_path}"
+    log "Self-update mode: Topgrade built-in"
     log "Note: ensure \$HOME/.local/bin is on your PATH (e.g. in ~/.bashrc or ~/.profile) if it is not already."
+    rm -rf "$tmpdir"
 }
 
 install_traditional() {
@@ -479,6 +772,9 @@ verify_installation() {
     if command -v topgrade >/dev/null 2>&1; then
         topgrade_bin="topgrade"
         log "Using topgrade found on PATH"
+        if [[ -x "${HOME}/.local/bin/topgrade" && "$(command -v topgrade)" != "${HOME}/.local/bin/topgrade" ]]; then
+            log "Warning: ${HOME}/.local/bin/topgrade exists but PATH resolves topgrade to $(command -v topgrade). Check PATH ordering or remove older package-managed installs."
+        fi
     elif [[ -x "${HOME}/.local/bin/topgrade" ]]; then
         topgrade_bin="${HOME}/.local/bin/topgrade"
         log "Using topgrade at ${HOME}/.local/bin/topgrade"
@@ -493,10 +789,16 @@ verify_installation() {
 
 usage() {
     cat <<'EOF'
-Usage: install-topgrade.sh [--force-config]
+Usage: install-topgrade.sh [--force-config] [--install-method binary|copr] [--version vX.Y.Z]
 
-  --force-config   Regenerate ~/.config/topgrade.toml even if one already exists
-                   (the existing file is backed up first)
+  --force-config         Regenerate ~/.config/topgrade.toml even if one already exists
+                         (the existing file is backed up first)
+  --install-method MODE  On Fedora Atomic hosts, choose 'binary' or 'copr'
+                         (also available as TOPGRADE_INSTALL_METHOD=binary|copr)
+  --binary               Alias for --install-method=binary
+  --copr                 Alias for --install-method=copr
+  --version TAG          Install a specific topgrade release tag for binary installs,
+                         for example v17.9.0 (also available as TOPGRADE_VERSION=v17.9.0)
 EOF
 }
 
@@ -506,6 +808,38 @@ main() {
             --force-config)
                 FORCE_CONFIG=1
                 shift
+                ;;
+            --install-method)
+                if [[ $# -lt 2 ]]; then
+                    log_error "--install-method requires 'binary' or 'copr'"
+                    usage >&2
+                    exit 1
+                fi
+                INSTALL_METHOD="$2"
+                validate_install_method "$INSTALL_METHOD" || exit 1
+                shift 2
+                ;;
+            --install-method=*)
+                INSTALL_METHOD="${1#*=}"
+                validate_install_method "$INSTALL_METHOD" || exit 1
+                shift
+                ;;
+            --binary)
+                INSTALL_METHOD="binary"
+                shift
+                ;;
+            --copr)
+                INSTALL_METHOD="copr"
+                shift
+                ;;
+            --version)
+                if [[ $# -lt 2 ]]; then
+                    log_error "--version requires a tag such as v17.9.0"
+                    usage >&2
+                    exit 1
+                fi
+                TOPGRADE_VERSION="$2"
+                shift 2
                 ;;
             -h|--help)
                 usage
@@ -533,24 +867,33 @@ main() {
 
     if is_atomic_host; then
         log "Detected OSTree-based atomic system"
+        choose_atomic_install_method || exit 1
+        if command -v rpm >/dev/null 2>&1 && rpm -q topgrade >/dev/null 2>&1; then
+            log "Warning: an RPM-managed topgrade package is present. This script will not remove it automatically; consider migrating explicitly if PATH precedence is ambiguous."
+        fi
 
-        log "==> Installing topgrade"
-        if command -v rpm-ostree >/dev/null 2>&1; then
-            if install_via_copr_rpmostree; then
+        case "$ATOMIC_INSTALL_METHOD" in
+            copr)
+                if ! command -v rpm-ostree >/dev/null 2>&1; then
+                    log_error "--install-method=copr requires rpm-ostree on Atomic hosts. Use --install-method=binary on bootc-only systems."
+                    exit 1
+                fi
+                log "Atomic install method: COPR / rpm-ostree"
+                install_via_copr_rpmostree
                 PACKAGE_MANAGED=1
                 configure_topgrade
                 log "topgrade has been staged via rpm-ostree and requires a reboot to become active."
                 offer_reboot
                 log "After rebooting, re-run this script to finish verification."
                 exit 0
-            fi
-            log "COPR/rpm-ostree install path failed; falling back to GitHub release binary"
-        else
-            log "rpm-ostree not available on this atomic host (bootc-only); skipping COPR/rpm-ostree layering, using GitHub release binary"
-        fi
-
-        install_via_github_release
-        configure_topgrade
+                ;;
+            binary)
+                log "Atomic install method: official upstream binary"
+                install_via_github_release
+                PACKAGE_MANAGED=0
+                configure_topgrade
+                ;;
+        esac
     else
         log "Detected traditional (non-atomic) Linux system"
         log "==> Installing topgrade"
