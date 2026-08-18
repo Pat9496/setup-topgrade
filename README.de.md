@@ -4,7 +4,7 @@
 
 Ein Bash-Skript, das [topgrade](https://github.com/topgrade-rs/topgrade) installiert und konfiguriert — das Werkzeug, das alle Aktualisierungsbefehle des Systems (apt/dnf/flatpak/cargo/firmware/etc.) in einem Schritt ausführt — auf jedem Linux-System, einschließlich OSTree-basierter atomarer und unveränderlicher Systeme wie Bazzite und Fedora Silverblue/Kinoite/Atomic sowie bootc-basierten atomaren Hosts.
 
-Diese Seite auch auf [Englisch](README.md).
+[English version](README.md)
 
 ## Inhaltsverzeichnis
 

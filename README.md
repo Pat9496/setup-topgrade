@@ -4,7 +4,7 @@
 
 A single Bash script that installs and configures [topgrade](https://github.com/topgrade-rs/topgrade) — the tool that runs all of your system's update commands (apt/dnf/flatpak/cargo/firmware/etc.) in one go — on any Linux distro, including OSTree-based atomic/immutable systems like Bazzite and Fedora Silverblue/Kinoite/Atomic, and bootc-based atomic hosts.
 
-Read this in [Deutsch](README.de.md).
+[Deutsche Version](README.de.md)
 
 ## Table of Contents
 
