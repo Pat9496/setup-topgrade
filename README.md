@@ -120,6 +120,7 @@ The generated config includes a few pieces conditionally, based on what's actual
 | `"ScummVM Nightly"` custom command | `scummvm-nightly-update` is on `$PATH` |
 | `[containers] runtime = "podman"` | `podman` is on `$PATH` and `docker` is not |
 | `"waydroid"` in `disable` | added unless waydroid is both installed **and** initialized (`waydroid status` reports a `Session:` line) |
+| `"toolbx"` in `disable` | added when `distrobox` is installed (distrobox already upgrades its containers, and toolbx errors on distrobox-created ones) |
 
 > **Why waydroid is disabled by default:** if waydroid is installed but never initialized (`waydroid init` was never run), `waydroid status` doesn't print a `Session:` line, and topgrade crashes outright when it parses that — an upstream bug ([topgrade-rs/topgrade#869](https://github.com/topgrade-rs/topgrade/issues/869)). To avoid that crash, the script disables the `waydroid` step unless it can confirm waydroid is actually initialized.
 >

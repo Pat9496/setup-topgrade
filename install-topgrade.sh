@@ -253,7 +253,8 @@ assert_safe_tar_archive() {
 
 backup_config_once() {
     local config_file="$1"
-    local backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
+    local backup_file
+    backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
     cp -p "$config_file" "$backup_file"
     printf '%s\n' "$backup_file"
 }
@@ -355,7 +356,8 @@ configure_topgrade() {
         repair_existing_config "$config_file"
     else
         if [[ -f "$config_file" ]]; then
-            local backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
+            local backup_file
+            backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
             cp -p "$config_file" "$backup_file"
             log "--force-config: existing config backed up to ${backup_file}, regenerating"
         fi
@@ -393,6 +395,13 @@ configure_topgrade() {
         else
             log "waydroid: installed but not initialized (run 'waydroid init' first), disabling it in generated config to avoid a topgrade crash (topgrade-rs/topgrade#869); re-run with --force-config once initialized to re-enable it"
             disable_items+=("waydroid")
+        fi
+
+        if command -v distrobox >/dev/null 2>&1; then
+            log "toolbx: distrobox found, disabling the toolbx step in generated config (distrobox already upgrades its containers)"
+            disable_items+=("toolbx")
+        else
+            log "toolbx: distrobox not found, leaving toolbx step enabled"
         fi
 
         local chezmoi_push_line=""
